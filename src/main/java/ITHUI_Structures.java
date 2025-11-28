@@ -9,7 +9,7 @@ import java.util.PriorityQueue;
 class GlobalUtilityList implements Serializable {
     public int itemInternalId; // ID nội bộ (0, 1, 2...)
     public long sumIU;         // Tổng tiện ích thực
-    public long sumRU;         // Tổng tiện ích còn lại
+    public transient long sumRU;         // Tổng tiện ích còn lại
     public long twu;           // Transaction Weighted Utility
 
     // Dùng FastUtil IntArrayList để tiết kiệm RAM (như mảng int[] trong C)

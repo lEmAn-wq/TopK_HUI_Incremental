@@ -123,7 +123,6 @@ public class ITHUI_Algorithm {
             GlobalUtilityList list = sortedLists.get(i);
             
             // QUAN TRỌNG: Nếu TWU < minUtil -> Bỏ qua (Skip), không tính RU cho nó
-            // Đây chính là tối ưu mà Sếp yêu cầu
             if (list.twu < minUtil) continue;
 
             list.resetRU(); // Cấp phát lại bộ nhớ cho RU (toàn số 0)

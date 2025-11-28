@@ -1,3 +1,4 @@
+import io.github.cdimascio.dotenv.Dotenv;
 import java.io.*;
 import java.sql.*;
 import java.util.*;
@@ -62,10 +63,15 @@ public class ITHUI_IO {
     // 3. Kết nối SQL Server & Lấy dữ liệu mới
     public static List<TransactionTuple> fetchIncrementalData(int lastTID) {
         List<TransactionTuple> data = new ArrayList<>();
-        // Sếp sửa lại thông tin DB của sếp ở đây nhé
-        String url = "jdbc:sqlserver://LOCALHOST:1433;databaseName=YourDB;encrypt=true;trustServerCertificate=true;";
-        String user = "sa";
-        String pass = "password"; 
+        
+        Dotenv dotenv = Dotenv.configure().ignoreIfMissing().load();
+        String dbUrl = dotenv.get("DB_CONNECTION_STRING");
+
+        // Kiểm tra xem có lấy được chuỗi không
+        if (dbUrl == null || dbUrl.isEmpty()) {
+            System.out.println("⚠️ Lỗi: Không tìm thấy DB_CONNECTION_STRING trong file .env");
+            return data;
+        }
 
         // Câu lệnh SQL "thần thánh": Gộp bảng đơn và bảng combo, xử lý prefix 'cb'
         String sql = 
@@ -76,9 +82,10 @@ public class ITHUI_IO {
             "FROM [order_mgmt].[order_combo_item] WHERE order_id > ? " +
             "ORDER BY order_id ASC";
 
-        try (Connection conn = DriverManager.getConnection(url, user, pass);
+        try (Connection conn = DriverManager.getConnection(dbUrl);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
+            System.out.println(">> Đang kết nối đến SQL Server...");
             pstmt.setInt(1, lastTID);
             pstmt.setInt(2, lastTID);
             
@@ -86,14 +93,14 @@ public class ITHUI_IO {
             while (rs.next()) {
                 data.add(new TransactionTuple(
                     rs.getInt("order_id"),
-                    rs.getString("item_id"), // Lấy về "101" hoặc "cb1"
+                    rs.getString("item_id"),
                     rs.getInt("utility")
                 ));
             }
             System.out.println(">> Đã tải " + data.size() + " dòng dữ liệu mới từ SQL.");
         } catch (Exception e) {
             e.printStackTrace();
-            System.out.println("⚠️ Lỗi kết nối SQL! (Kiểm tra lại user/pass)");
+            System.out.println("⚠️ Lỗi kết nối SQL! Kiểm tra lại file .env");
         }
         return data;
     }
