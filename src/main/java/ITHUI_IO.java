@@ -75,11 +75,18 @@ public class ITHUI_IO {
 
         // Câu lệnh SQL "thần thánh": Gộp bảng đơn và bảng combo, xử lý prefix 'cb'
         String sql = 
-            "SELECT order_id, CAST(product_variant_id AS VARCHAR) as item_id, (quantity * unit_profit) as utility " +
-            "FROM [order_mgmt].[order_single_item] WHERE order_id > ? " +
+            "SELECT si.order_id, CAST(si.product_variant_id AS VARCHAR) as item_id, (si.quantity * si.unit_profit) as utility " +
+            "FROM [order_mgmt].[order_single_item] si " +
+            "JOIN [order_mgmt].[order] o ON si.order_id = o.order_id " +
+            "WHERE si.order_id > ? AND o.order_status = 'Completed' AND o.actual_delivery_date IS NOT NULL " + // <--- THÊM ĐIỀU KIỆN NÀY
+            
             "UNION ALL " +
-            "SELECT order_id, 'cb' + CAST(combo_id AS VARCHAR) as item_id, (quantity * unit_profit) as utility " +
-            "FROM [order_mgmt].[order_combo_item] WHERE order_id > ? " +
+            
+            "SELECT ci.order_id, 'cb' + CAST(ci.combo_id AS VARCHAR) as item_id, (ci.quantity * ci.unit_profit) as utility " +
+            "FROM [order_mgmt].[order_combo_item] ci " +
+            "JOIN [order_mgmt].[order] o ON ci.order_id = o.order_id " +
+            "WHERE ci.order_id > ? AND o.order_status = 'Completed' AND o.actual_delivery_date IS NOT NULL " + // <--- THÊM ĐIỀU KIỆN NÀY
+            
             "ORDER BY order_id ASC";
 
         try (Connection conn = DriverManager.getConnection(dbUrl);

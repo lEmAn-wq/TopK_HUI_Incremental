@@ -1,2 +1,4 @@
 target/
 .env
+ithui_state.bin
+command.txt

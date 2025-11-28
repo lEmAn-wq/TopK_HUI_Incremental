@@ -9,6 +9,7 @@ public class ITHUI_Algorithm {
     static long minUtil = 0; // Ngưỡng toàn cục
     static int K_VALUE = 0;  // K người dùng nhập
 
+    static HashMap<Integer, Long> itemTotalUtilityMap = new HashMap<>();
     // ---------------------------------------------------------
     // MAIN: Nơi điều phối mọi thứ
     // ---------------------------------------------------------
@@ -43,11 +44,25 @@ public class ITHUI_Algorithm {
             return;
         }
 
-        // 4. CẬP NHẬT DỮ LIỆU (Insertion Phase)
-        // Duyệt qua dữ liệu thô, Mapping ID, cập nhật Global List
+        // 4. CẬP NHẬT DỮ LIỆU (Insertion Phase) - Tự tính TWU trong Java
         int maxTID = config.lastTID;
+
+        // --- BƯỚC 4A: TÍNH TỔNG TIỆN ÍCH CỦA TỪNG GIAO DỊCH (Transaction Utility - TU) ---
+        // Map<TID, Tổng tiền đơn hàng>
+        HashMap<Integer, Long> transactionUtilityMap = new HashMap<>();
+        
         for (ITHUI_IO.TransactionTuple t : newData) {
-            // Mapping: "cb1" -> ID số (ví dụ 5)
+            // Cộng dồn tiền của từng món vào tổng đơn hàng
+            transactionUtilityMap.put(t.tid, transactionUtilityMap.getOrDefault(t.tid, 0L) + t.utility);
+            
+            // Tiện tay cập nhật maxTID luôn
+            if (t.tid > maxTID) maxTID = t.tid;
+        }
+        config.lastTID = maxTID; // Cập nhật TID mới nhất để ghi lại file
+
+        // --- BƯỚC 4B: CẬP NHẬT GLOBAL LIST & TÍNH TWU CHUẨN ---
+        for (ITHUI_IO.TransactionTuple t : newData) {
+            // 1. Mapping: Chuyển đổi ID chuỗi ("cb1") -> ID số nội bộ (0, 1...)
             if (!state.stringToIntMap.containsKey(t.itemStr)) {
                 int newId = state.nextInternalId++;
                 state.stringToIntMap.put(t.itemStr, newId);
@@ -56,18 +71,23 @@ public class ITHUI_Algorithm {
             }
             int internalId = state.stringToIntMap.get(t.itemStr);
             
-            // Cập nhật Global List
+            // 2. Lấy Global List của item đó ra
             GlobalUtilityList list = state.globalLists.get(internalId);
+            
+            // 3. Thêm thông tin giao dịch mới
             list.tids.add(t.tid);
             list.utilities.add(t.utility);
-            list.sumIU += t.utility;
-            // Tính TWU sơ bộ (cần cộng dồn Transaction Utility - ở đây làm đơn giản là cộng utility item)
-            // *Lưu ý: Đúng ra phải tính TU của cả giao dịch trước, nhưng để code ngắn gọn tôi tạm cộng dồn util.
-            list.twu += t.utility; 
             
-            if (t.tid > maxTID) maxTID = t.tid;
+            // 4. Cập nhật SumIU (Tiện ích thực của item)
+            // Ví dụ: Bán cái áo lãi 50k -> Cộng 50k
+            list.sumIU += t.utility;
+            
+            // 5. Cập nhật TWU (Transaction Weighted Utility) - CHUẨN BÀI BÁO
+            // TWU của item = Cộng dồn Tổng tiền của các đơn hàng mà nó xuất hiện
+            // Ví dụ: Đơn hàng T1 tổng 500k, trong đó có cái áo. Thì TWU của áo += 500k (chứ không phải 50k)
+            long currentTransactionTotal = transactionUtilityMap.get(t.tid);
+            list.twu += currentTransactionTotal; 
         }
-        config.lastTID = maxTID; // Cập nhật TID mới nhất để ghi lại file
 
         // 5. CHIẾN LƯỢC RIU (Real Item Utility)
         // Nâng ngưỡng dựa trên tiện ích của item đơn lẻ
@@ -85,11 +105,23 @@ public class ITHUI_Algorithm {
         runStrategy_LIU(sortedLists, pq);
 
         // 8. KHAI PHÁ (Mining with RUC)
-        // Lọc lần cuối: Chỉ mining những item > minUtil
-        System.out.println(">> Bắt đầu khai phá với ngưỡng: " + minUtil);
-        // (Đây là chỗ gọi hàm đệ quy - Tôi viết khung sườn, Sếp điền thêm logic DFS nếu cần chi tiết)
-        // runMiningDFS(...) 
+        System.out.println(">> Bắt đầu khai phá (Mining DFS) với ngưỡng: " + minUtil);
         
+        // Bước 1: Lọc ra các item cấp 1 thỏa mãn điều kiện để làm "Hạt giống"
+        List<GlobalUtilityList> seedLists = new ArrayList<>();
+        for (GlobalUtilityList list : sortedLists) {
+            // LỌC 1: TWU
+            if (list.twu < minUtil) continue;
+            // LỌC 2: Upper Bound
+            if (list.sumIU + list.sumRU >= minUtil) {
+                seedLists.add(list);
+            }
+        }
+
+        // Bước 2: Gọi đệ quy (Parent ban đầu là NULL vì đang ở cấp 1)
+        // Chúng ta truyền vào danh sách các "anh em" (siblings) để chúng tự bắt cặp với nhau
+        runMiningDFS(null, seedLists, pq);
+
         // 9. LƯU TRẠNG THÁI & KẾT QUẢ
         state.topKPatterns = pq; // Lưu lại Top-k mới nhất
         saveStateKryo(state, binaryFile);
@@ -144,46 +176,261 @@ public class ITHUI_Algorithm {
 
     // 3. LIU Strategy (Xây dựng LIU & Nâng ngưỡng)
     static void runStrategy_LIU(List<GlobalUtilityList> sortedLists, PriorityQueue<Pattern> pq) {
-        // Bước A: Tạo giao dịch tạm (Restoring)
-        // Map<TID, List<Item>>
-        HashMap<Integer, IntArrayList> tempTransactions = new HashMap<>();
-        
-        for (GlobalUtilityList list : sortedLists) {
-            if (list.twu < minUtil) continue; // Lọc TWU
+        System.out.println(">> [LIU] Đang xây dựng ma trận...");
 
+        // --- BƯỚC A: TẠO GIAO DỊCH TẠM ---
+        HashMap<Integer, ArrayList<int[]>> tempTransactions = new HashMap<>();
+        HashMap<Integer, Integer> itemRankMap = new HashMap<>();
+        for(int i=0; i<sortedLists.size(); i++) itemRankMap.put(sortedLists.get(i).itemInternalId, i);
+
+        for (GlobalUtilityList list : sortedLists) {
+            if (list.twu < minUtil) continue;
             for (int i = 0; i < list.tids.size(); i++) {
                 int tid = list.tids.getInt(i);
-                tempTransactions.computeIfAbsent(tid, k -> new IntArrayList()).add(list.itemInternalId);
+                int util = list.utilities.getInt(i);
+                tempTransactions.computeIfAbsent(tid, k -> new ArrayList<>()).add(new int[]{list.itemInternalId, util});
             }
         }
 
-        // Bước B: Xây dựng Ma trận LIU (Map<Cặp_Item, Utility>)
-        // Key: Mã Hash của cặp (u, v), Value: Utility
+        // --- BƯỚC B: XÂY DỰNG MA TRẬN LIU ---
         HashMap<String, Long> liuMatrix = new HashMap<>(); 
-        
-        // (Logic xây dựng ma trận LIU và chạy LIU-E, LIU-LB nằm ở đây)
-        // Do giới hạn độ dài, tôi mô tả logic: Duyệt tempTransactions, tìm cặp liền kề, cộng vào liuMatrix.
-        // Sau đó duyệt liuMatrix để updateTopK.
-        
-        System.out.println(">> [LIU] Đã chạy xong chiến lược LIU (Simulation).");
+        HashMap<String, IntArrayList> liuMiddleItems = new HashMap<>();
+
+        for (ArrayList<int[]> trans : tempTransactions.values()) {
+            for (int i = 0; i < trans.size(); i++) {
+                int[] startItem = trans.get(i);
+                int u = startItem[0];
+                long currentChainUtil = startItem[1]; 
+                
+                for (int j = i + 1; j < trans.size(); j++) {
+                    int[] endItem = trans.get(j);
+                    int[] prevItem = trans.get(j-1);
+                    
+                    if (itemRankMap.get(endItem[0]) != itemRankMap.get(prevItem[0]) + 1) break; 
+                    
+                    currentChainUtil += endItem[1];
+                    String key = u + "_" + endItem[0]; // Key dạng "IDđầu_IDđuôi"
+                    liuMatrix.put(key, liuMatrix.getOrDefault(key, 0L) + currentChainUtil); 
+                    
+                    if (!liuMiddleItems.containsKey(key)) {
+                        IntArrayList mids = new IntArrayList();
+                        for(int k = i + 1; k < j; k++) mids.add(trans.get(k)[0]);
+                        liuMiddleItems.put(key, mids);
+                    }
+                }
+            }
+        }
+
+        // --- BƯỚC C.1: CHIẾN LƯỢC LIU-E (SỬA LỖI HIỂN THỊ) ---
+        System.out.println(">> [LIU] Chạy LIU-E...");
+        // [FIX]: Duyệt entrySet để lấy Key (Tên item) thay vì chỉ lấy Value
+        for (Map.Entry<String, Long> entry : liuMatrix.entrySet()) {
+            long utility = entry.getValue();
+            if (utility >= minUtil) {
+                // Tách Key "u_v" để lấy ID item
+                String[] parts = entry.getKey().split("_");
+                IntArrayList patternItems = new IntArrayList();
+                patternItems.add(Integer.parseInt(parts[0])); // Item u
+                patternItems.add(Integer.parseInt(parts[1])); // Item v
+                
+                // Cập nhật vào Top-k với đầy đủ tên tuổi
+                updateTopK(pq, new Pattern(patternItems, utility)); 
+            }
+        }
+        System.out.println(">> [LIU-E] Ngưỡng hiện tại: " + minUtil);
+
+        // --- BƯỚC C.2: CHIẾN LƯỢC LIU-LB (SỬA LỖI HIỂN THỊ) ---
+        System.out.println(">> [LIU] Chạy LIU-LB...");
+        for (Map.Entry<String, Long> entry : liuMatrix.entrySet()) {
+            String key = entry.getKey();
+            long utility = entry.getValue(); 
+            
+            if (utility < minUtil) continue; 
+
+            IntArrayList mids = liuMiddleItems.get(key);
+            if (mids != null && !mids.isEmpty()) {
+                int mSize = mids.size();
+                
+                // Chuẩn bị Pattern đại diện cho LB (Gồm Đầu và Đuôi)
+                String[] parts = key.split("_");
+                IntArrayList lbPattern = new IntArrayList();
+                lbPattern.add(Integer.parseInt(parts[0]));
+                lbPattern.add(Integer.parseInt(parts[1]));
+
+                // Case 1: Bỏ 1 item
+                for (int m : mids) {
+                    long lb = utility - itemTotalUtilityMap.getOrDefault(m, 0L);
+                    if (lb >= minUtil) updateTopK(pq, new Pattern(lbPattern, lb));
+                }
+
+                // Case 2: Bỏ 2 item
+                if (mSize >= 2) {
+                    for (int x = 0; x < mSize; x++) {
+                        for (int y = x + 1; y < mSize; y++) {
+                            long deduc = itemTotalUtilityMap.getOrDefault(mids.getInt(x), 0L) 
+                                       + itemTotalUtilityMap.getOrDefault(mids.getInt(y), 0L);
+                            long lb = utility - deduc;
+                            if (lb >= minUtil) updateTopK(pq, new Pattern(lbPattern, lb));
+                        }
+                    }
+                }
+
+                // Case 3: Bỏ 3 item
+                if (mSize >= 3) {
+                    for (int x = 0; x < mSize; x++) {
+                        for (int y = x + 1; y < mSize; y++) {
+                            for (int z = y + 1; z < mSize; z++) {
+                                long deduc = itemTotalUtilityMap.getOrDefault(mids.getInt(x), 0L) 
+                                           + itemTotalUtilityMap.getOrDefault(mids.getInt(y), 0L)
+                                           + itemTotalUtilityMap.getOrDefault(mids.getInt(z), 0L);
+                                long lb = utility - deduc;
+                                if (lb >= minUtil) updateTopK(pq, new Pattern(lbPattern, lb));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        System.out.println(">> [LIU] Hoàn tất. Ngưỡng cuối cùng: " + minUtil);
     }
 
+    // ---------------------------------------------------------
+    // CHIẾN LƯỢC 4: MINING (DFS Recursion)
+    // ---------------------------------------------------------
+    static void runMiningDFS(GlobalUtilityList parentList, List<GlobalUtilityList> siblings, PriorityQueue<Pattern> pq) {
+        
+        // Duyệt qua từng item làm "Gốc" (Prefix)
+        for (int i = 0; i < siblings.size(); i++) {
+            GlobalUtilityList prefixList = siblings.get(i);
+            
+            // Chuẩn bị danh sách con cho vòng đệ quy sau
+            List<GlobalUtilityList> childLists = new ArrayList<>();
+            
+            // Duyệt các item đứng sau nó (Anh em - Extension)
+            for (int j = i + 1; j < siblings.size(); j++) {
+                GlobalUtilityList extensionList = siblings.get(j);
+                
+                // HỢP NHẤT 2 ANH EM: Prefix + Extension (Dựa trên Parent)
+                // Công thức: U(Px) + U(Py) - U(P)
+                GlobalUtilityList newList = constructUtilityList(prefixList, extensionList, parentList);
+                
+                // 1. RUC Strategy: Cập nhật Top-K ngay
+                if (newList.sumIU >= minUtil) {
+                    // Tái tạo lại Pattern ID (để lưu vào Queue)
+                    IntArrayList newPatternItems = new IntArrayList();
+                    // (Lưu ý: Trong thực tế để tối ưu RAM, ta không lưu full itemID trong list con 
+                    // mà chỉ lưu ID của item cuối, khi nào in ra mới truy vết ngược lại.
+                    // Nhưng ở đây để code dễ hiểu, tôi giả định list con kế thừa items của list cha).
+                    // *Để đơn giản cho bản Java này: Tôi cộng gộp ID vào newList.tids (Hack nhẹ để lưu ID pattern)*
+                    
+                    // Logic tạo pattern để in ra (Không ảnh hưởng thuật toán)
+                    if (parentList != null) newPatternItems.addAll(parentList.patternItems); // Code thêm: Cần field patternItems
+                    else newPatternItems.add(prefixList.itemInternalId);
+                    newPatternItems.add(extensionList.itemInternalId);
+                    
+                    updateTopK(pq, new Pattern(newPatternItems, newList.sumIU));
+                }
+                
+                // 2. Pruning: Cắt tỉa Upper Bound
+                if (newList.sumIU + newList.sumRU >= minUtil) {
+                    childLists.add(newList);
+                }
+            }
+            
+            // Đệ quy sâu xuống nếu có con
+            if (!childLists.isEmpty()) {
+                // Lúc này prefixList trở thành Parent của đám childLists
+                runMiningDFS(prefixList, childLists, pq);
+            }
+        }
+    }
+    // Hàm hợp nhất 2 Utility List (SIBLING MERGE)
+    // Input: List X (Px), List Y (Py), List P (Parent)
+    // Công thức: U(Pxy) = U(Px) + U(Py) - U(P)
+    static GlobalUtilityList constructUtilityList(GlobalUtilityList listX, GlobalUtilityList listY, GlobalUtilityList listParent) {
+        GlobalUtilityList res = new GlobalUtilityList(listY.itemInternalId); // ID của item đuôi
+        long sumIU = 0;
+        long sumRU = 0;
+        
+        // Thuật toán 3 Con trỏ (Nếu Parent != null) hoặc 2 Con trỏ (Nếu Parent == null - Cấp 1)
+        int idxX = 0, idxY = 0, idxP = 0;
+        
+        while (idxX < listX.tids.size() && idxY < listY.tids.size()) {
+            int tidX = listX.tids.getInt(idxX);
+            int tidY = listY.tids.getInt(idxY);
+            
+            if (tidX == tidY) { // Tìm thấy giao dịch chung
+                int commonTID = tidX;
+                
+                // 1. Lấy Utility của X và Y
+                long uX = listX.utilities.getInt(idxX);
+                long uY = listY.utilities.getInt(idxY);
+                
+                // 2. Lấy Utility của Parent (P) để trừ
+                long uP = 0;
+                if (listParent != null) {
+                    // Tìm TID tương ứng trong Parent (Chắc chắn có vì P là cha của X, Y)
+                    // Tối ưu: Dịch chuyển con trỏ P đến đúng vị trí (không cần search từ đầu)
+                    while (listParent.tids.getInt(idxP) < commonTID) idxP++;
+                    // Lúc này listParent.tids.getInt(idxP) == commonTID
+                    uP = listParent.utilities.getInt(idxP);
+                }
+                
+                // 3. Áp dụng công thức bài báo
+                long newUtil = uX + uY - uP;
+                
+                // 4. RU là của thằng Y (đứng sau)
+                long newRU = listY.remainingUtilities.getInt(idxY);
+                
+                // 5. Lưu kết quả
+                res.tids.add(commonTID);
+                res.utilities.add((int)newUtil);
+                res.remainingUtilities.add((int)newRU);
+                
+                sumIU += newUtil;
+                sumRU += newRU;
+                
+                idxX++;
+                idxY++;
+            } else if (tidX < tidY) {
+                idxX++;
+            } else {
+                idxY++;
+            }
+        }
+        res.sumIU = sumIU;
+        res.sumRU = sumRU;
+        // Kế thừa pattern items: Cha + Đuôi Y
+        res.patternItems.addAll(listX.patternItems); // X chính là P + x (Đại diện cho nhánh trái)
+        return res;
+    }
     // Hàm cập nhật Top-K (RUC logic)
     static void updateTopK(PriorityQueue<Pattern> pq, Pattern p) {
+        // 1. Kiểm tra điều kiện cơ bản
         if (p.utility < minUtil && pq.size() >= K_VALUE) return;
         
-        pq.add(p);
-        // Nếu tràn k thì đá thằng nhỏ nhất ra
-        while (pq.size() > K_VALUE) {
-            pq.poll();
+        // 2. [FIX] KHỬ TRÙNG: Kiểm tra xem Pattern này đã tồn tại trong hàng đợi chưa?
+        // Duyệt qua hàng đợi (O(K) - rất nhanh vì K nhỏ)
+        for (Pattern existing : pq) {
+            // So sánh danh sách item (IntArrayList đã hỗ trợ hàm equals chuẩn)
+            if (existing.items.equals(p.items)) {
+                return; // Đã có rồi -> Bỏ qua, không thêm nữa
+            }
         }
         
-        // Cập nhật minUtil mới
+        // 3. Thêm vào hàng đợi
+        pq.add(p);
+        
+        // 4. Duy trì kích thước K
+        while (pq.size() > K_VALUE) {
+            pq.poll(); // Đá thằng nhỏ nhất ra
+        }
+        
+        // 5. Cập nhật minUtil
         if (pq.size() == K_VALUE) {
             minUtil = pq.peek().utility;
         }
     }
-
     // --- KRYO UTILS ---
     static void saveStateKryo(ITHUIState state, String filename) {
         try {
