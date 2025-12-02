@@ -1,38 +1,24 @@
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import java.io.Serializable;
-import java.util.HashMap;
-import java.util.PriorityQueue;
+import java.util.*;
 
 // -----------------------------------------------------------
-// 1. GLOBAL UTILITY LIST: Cấu trúc lõi lưu trữ Item
+// 1. GLOBAL UTILITY LIST (Giữ nguyên)
 // -----------------------------------------------------------
 class GlobalUtilityList implements Serializable {
-    public int itemInternalId; // ID nội bộ (0, 1, 2...)
-    public long sumIU;         // Tổng tiện ích thực
-    public transient long sumRU;         // Tổng tiện ích còn lại
-    public long twu;           // Transaction Weighted Utility
-
-    // Dùng FastUtil IntArrayList để tiết kiệm RAM (như mảng int[] trong C)
-    public IntArrayList tids;
-    public IntArrayList utilities;
-
-    // TRANSIENT: Không lưu cột này xuống ổ cứng!
-    // Khi load lên nó sẽ null, ta sẽ reset về 0.
-    public transient IntArrayList remainingUtilities; 
-
-    // Thêm biến này để lưu vết Pattern ID (phục vụ in kết quả)
+    public int itemInternalId;
+    public long sumIU;         
+    public transient long sumRU;         
+    public long twu;           
+    public IntArrayList tids = new IntArrayList();
+    public IntArrayList utilities = new IntArrayList();
+    public transient IntArrayList remainingUtilities = new IntArrayList();
     public IntArrayList patternItems = new IntArrayList();
 
-    public GlobalUtilityList() {} // Constructor mặc định cho Serialization
     public GlobalUtilityList(int id) {
         this.itemInternalId = id;
-        this.patternItems.add(id); // Mặc định chứa chính nó
-        this.tids = new IntArrayList();
-        this.utilities = new IntArrayList();
-        this.remainingUtilities = new IntArrayList();
+        this.patternItems.add(id);
     }
-
-    // Hàm reset RU về 0 (như malloc lại mảng 0)
     public void resetRU() {
         this.remainingUtilities = new IntArrayList(tids.size());
         for(int i=0; i<tids.size(); i++) this.remainingUtilities.add(0);
@@ -40,46 +26,120 @@ class GlobalUtilityList implements Serializable {
 }
 
 // -----------------------------------------------------------
-// 2. PATTERN: Đối tượng để lưu kết quả Top-k
+// 2. PATTERN (Giữ nguyên)
 // -----------------------------------------------------------
 class Pattern implements Comparable<Pattern>, Serializable {
-    public IntArrayList items; // Danh sách item trong pattern
-    public long utility;       // Lợi nhuận
+    public IntArrayList items;
+    public long utility;
 
     public Pattern(IntArrayList items, long utility) {
         this.items = new IntArrayList(items);
         this.utility = utility;
     }
-
-    // So sánh để PriorityQueue biết ai lớn ai nhỏ
-    @Override
-    public int compareTo(Pattern o) {
-        // Sắp xếp tăng dần theo Utility (để thằng nhỏ nhất nằm đầu Queue - dễ đá ra)
+    @Override public int compareTo(Pattern o) {
         return Long.compare(this.utility, o.utility);
     }
-    
-    @Override
-    public String toString() {
-        return "Pattern: " + items.toString() + " - Utility: " + utility;
-    }
+    @Override public String toString() { return items.toString() + " : " + utility; }
 }
 
 // -----------------------------------------------------------
-// 3. ITHUI STATE: Trạng thái toàn cục (Sẽ lưu ra file .bin)
+// 3. ITHUI STATE (Lưu trữ trạng thái)
 // -----------------------------------------------------------
 class ITHUIState implements Serializable {
-    // Map lưu trữ: Item ID (nội bộ) -> Global List
     public HashMap<Integer, GlobalUtilityList> globalLists = new HashMap<>();
-    
-    // Từ điển Mapping: "cb1" -> 1001, "105" -> 5
     public HashMap<String, Integer> stringToIntMap = new HashMap<>();
     public HashMap<Integer, String> intToStringMap = new HashMap<>();
-    
-    // Bộ đếm để cấp phát ID nội bộ mới
     public int nextInternalId = 0;
-
-    // Top-k cũ để làm "mồi" nâng ngưỡng lần sau
-    public PriorityQueue<Pattern> topKPatterns = new PriorityQueue<>();
+    
+    // Lưu ngưỡng MinUtil cuối cùng để Warm-Start cho lần sau
+    public long lastMinUtil = 0; 
     
     public ITHUIState() {}
+}
+
+// ===========================================================
+// 4. [PHASE 1 & 2] GLOBAL THRESHOLD QUEUE (Strict Top-k)
+// Dùng để tìm ngưỡng minUtil nhanh nhất (chỉ chứa số)
+// ===========================================================
+class GlobalThresholdQueue {
+    private int k;
+    private PriorityQueue<Long> queue = new PriorityQueue<>(); // Min-Heap
+    private long minUtil;
+
+    public GlobalThresholdQueue(int k, long startThreshold) {
+        this.k = k;
+        this.minUtil = startThreshold;
+    }
+
+    public void add(long value) {
+        if (value <= minUtil && queue.size() >= k) return;
+        if (value < minUtil) return; // Nếu chưa đầy k nhưng nhỏ hơn ngưỡng khởi điểm thì cũng bỏ
+
+        // Thêm vào hàng đợi
+        queue.offer(value);
+
+        // Duy trì kích thước cứng là K (Strict Top-k)
+        while (queue.size() > k) {
+            queue.poll(); // Loại bỏ phần tử nhỏ nhất
+        }
+
+        // Cập nhật minUtil
+        if (queue.size() == k) {
+            minUtil = queue.peek();
+        }
+    }
+
+    public long getMinUtil() { return minUtil; }
+}
+
+// ===========================================================
+// 5. [PHASE 3] TOP-K RESULT LIST (Dense Rank)
+// Dùng để lưu kết quả khai phá, xử lý đồng hạng
+// ===========================================================
+class TopKResultList {
+    private int k;
+    private long minUtil;
+    private List<Pattern> results = new ArrayList<>();
+
+    public TopKResultList(int k, long startThreshold) {
+        this.k = k;
+        this.minUtil = startThreshold;
+    }
+
+    public void add(Pattern p) {
+        if (p.utility < minUtil) return;
+
+        results.add(p);
+        // Sắp xếp giảm dần để tính Rank
+        results.sort((p1, p2) -> Long.compare(p2.utility, p1.utility));
+
+        // Logic Dense Rank (Top-k Mức giá trị)
+        int distinctCount = 0;
+        long lastVal = -1;
+        long newThreshold = this.minUtil;
+        boolean hasKLevels = false;
+
+        for (Pattern pat : results) {
+            if (pat.utility != lastVal) {
+                distinctCount++;
+                lastVal = pat.utility;
+            }
+            // Tìm thấy mức giá trị thứ k
+            if (distinctCount == k) {
+                newThreshold = pat.utility;
+                hasKLevels = true;
+                break;
+            }
+        }
+
+        // Cắt đuôi nếu đã đủ K mức
+        if (hasKLevels) {
+            this.minUtil = newThreshold;
+            // Chỉ loại bỏ các pattern NHỎ HƠN ngưỡng (giữ lại đồng hạng bằng ngưỡng)
+            results.removeIf(pat -> pat.utility < minUtil);
+        }
+    }
+
+    public long getMinUtil() { return minUtil; }
+    public List<Pattern> getResults() { return results; }
 }
