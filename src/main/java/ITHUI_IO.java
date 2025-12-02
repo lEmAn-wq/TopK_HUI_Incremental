@@ -13,25 +13,42 @@ public class ITHUI_IO {
         public int lastTID;
     }
 
-    public static Config readConfigFile(String path) {
+   public static Config readConfigFile(String path) {
         Config cfg = new Config();
         try {
             File file = new File(path);
             if (!file.exists()) return cfg;
+            
             BufferedReader br = new BufferedReader(new FileReader(file));
             String line;
             while ((line = br.readLine()) != null) {
                 line = line.trim();
-                if (line.startsWith("k")) cfg.k = Integer.parseInt(line.split("=")[1].trim());
-                else if (line.startsWith("last_TID")) cfg.lastTID = Integer.parseInt(line.split("=")[1].trim());
-                if (line.startsWith("#")) break;
+                if (line.isEmpty()) continue;
+
+                // [SỬA LỖI] Đọc k và last_TID
+                if (line.startsWith("k")) {
+                    try { 
+                        // Tách chuỗi kỹ hơn để tránh lỗi nếu có khoảng trắng
+                        cfg.k = Integer.parseInt(line.split("=")[1].trim()); 
+                    } catch (Exception e) {}
+                } 
+                else if (line.startsWith("last_TID")) {
+                    try { 
+                        cfg.lastTID = Integer.parseInt(line.split("=")[1].trim()); 
+                    } catch (Exception e) {}
+                }
+                
+                // [QUAN TRỌNG] Chỉ dừng khi gặp dòng kẻ phân cách kết quả (# ===...)
+                // Không dừng ở dòng comment header (# --- GLOBAL CONFIG)
+                if (line.startsWith("# ==")) break;
             }
             br.close();
+            
             System.out.println(">> Config: k=" + cfg.k + ", last_TID=" + cfg.lastTID);
         } catch (Exception e) { e.printStackTrace(); }
         return cfg;
     }
-
+    
     public static void writeConfigFile(String path, Config cfg, List<Pattern> results, ITHUIState state) {
         try {
             File file = new File(path);

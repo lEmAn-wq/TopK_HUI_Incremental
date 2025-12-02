@@ -1,0 +1,37 @@
+>> Config: k=5, last_TID=0
+>> [Warm-Start] MinUtil từ lần trước: 0
+>> Fetch SQL: 20 rows.
+>> [RIU] Ngưỡng: 120000
+>> [Restructuring] Hoàn tất.
+>> [LIU] Đang chạy...
+>> [LIU-E] Ngưỡng: 250000
+>> [LIU-LB] Ngưỡng: 250000
+>> [Phase 1 End] Ngưỡng chốt để Mining: 250000
+>> Đã lưu trạng thái.
+>> Đã ghi output.txt theo format Dense Rank.
+
+
+>> Config: k=5, last_TID=19
+>> [Warm-Start] MinUtil từ lần trước: 270000
+>> Fetch SQL: 12 rows.
+>> [RIU] Ngưỡng: 270000
+>> [Restructuring] Hoàn tất.
+>> [LIU] Đang chạy...
+>> [LIU-E] Ngưỡng: 350000
+>> [LIU-LB] Ngưỡng: 350000
+>> [Phase 1 End] Ngưỡng chốt để Mining: 350000
+>> Đã lưu trạng thái.
+>> Đã ghi output.txt theo format Dense Rank.
+
+
+>> Config: k=5, last_TID=40
+>> [Warm-Start] MinUtil từ lần trước: 1400000
+>> Fetch SQL: 14 rows.
+>> [RIU] Ngưỡng: 1400000
+>> [Restructuring] Hoàn tất.
+>> [LIU] Đang chạy...
+>> [LIU-E] Ngưỡng: 2200000
+>> [LIU-LB] Ngưỡng: 3600000
+>> [Phase 1 End] Ngưỡng chốt để Mining: 3600000
+>> Đã lưu trạng thái.
+>> Đã ghi output.txt theo format Dense Rank.
