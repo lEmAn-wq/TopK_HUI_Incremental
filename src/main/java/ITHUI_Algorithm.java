@@ -1,5 +1,3 @@
-import com.esotericsoftware.kryo.Kryo;
-import com.esotericsoftware.kryo.io.*;
 import it.unimi.dsi.fastutil.ints.*;
 import java.io.*;
 import java.util.*;
@@ -21,8 +19,8 @@ public class ITHUI_Algorithm {
         ITHUI_IO.Config config = ITHUI_IO.readConfigFile(configFile);
         K_VALUE = config.k;
 
-        // 2. Load trạng thái cũ (Kryo)
-        ITHUIState state = loadStateKryo(binaryFile);
+        // 2. Load trạng thái cũ
+        ITHUIState state = loadState(binaryFile);
         
         // --- CHIẾN LƯỢC: TÁI SỬ DỤNG TOP-K CŨ ---
         // Đổ Top-k cũ vào hàng đợi để "mồi" ngưỡng minUtil
@@ -124,7 +122,7 @@ public class ITHUI_Algorithm {
 
         // 9. LƯU TRẠNG THÁI & KẾT QUẢ
         state.topKPatterns = pq; // Lưu lại Top-k mới nhất
-        saveStateKryo(state, binaryFile);
+        saveState(state, binaryFile);
         ITHUI_IO.writeConfigFile(configFile, config, pq, state);
     }
 
@@ -175,24 +173,33 @@ public class ITHUI_Algorithm {
     }
 
     // 3. LIU Strategy (Xây dựng LIU & Nâng ngưỡng)
+    // LƯU Ý QUAN TRỌNG: LIU-E và LIU-LB chỉ dùng để NÂNG NGƯỠNG (minUtil)
+    // KHÔNG thêm pattern vào Top-K ở giai đoạn này!
+    // Top-K chỉ được tạo trong giai đoạn Mining DFS
     static void runStrategy_LIU(List<GlobalUtilityList> sortedLists, PriorityQueue<Pattern> pq) {
         System.out.println(">> [LIU] Đang xây dựng ma trận...");
 
         // --- BƯỚC A: TẠO GIAO DỊCH TẠM ---
+        // Mỗi giao dịch chứa danh sách [itemID, utility] đã sắp xếp theo TWU
         HashMap<Integer, ArrayList<int[]>> tempTransactions = new HashMap<>();
         HashMap<Integer, Integer> itemRankMap = new HashMap<>();
-        for(int i=0; i<sortedLists.size(); i++) itemRankMap.put(sortedLists.get(i).itemInternalId, i);
+        for(int i=0; i<sortedLists.size(); i++) {
+            itemRankMap.put(sortedLists.get(i).itemInternalId, i);
+        }
 
         for (GlobalUtilityList list : sortedLists) {
             if (list.twu < minUtil) continue;
             for (int i = 0; i < list.tids.size(); i++) {
                 int tid = list.tids.getInt(i);
                 int util = list.utilities.getInt(i);
-                tempTransactions.computeIfAbsent(tid, k -> new ArrayList<>()).add(new int[]{list.itemInternalId, util});
+                tempTransactions.computeIfAbsent(tid, k -> new ArrayList<>())
+                    .add(new int[]{list.itemInternalId, util});
             }
         }
 
         // --- BƯỚC B: XÂY DỰNG MA TRẬN LIU ---
+        // Ma trận LIU lưu utility của các chuỗi liền kề (ordered & contiguous)
+        // Key: "startItem_endItem", Value: tổng utility của chuỗi
         HashMap<String, Long> liuMatrix = new HashMap<>(); 
         HashMap<String, IntArrayList> liuMiddleItems = new HashMap<>();
 
@@ -206,12 +213,14 @@ public class ITHUI_Algorithm {
                     int[] endItem = trans.get(j);
                     int[] prevItem = trans.get(j-1);
                     
+                    // Chỉ xét chain LIÊN TIẾP (rank liền kề)
                     if (itemRankMap.get(endItem[0]) != itemRankMap.get(prevItem[0]) + 1) break; 
                     
                     currentChainUtil += endItem[1];
-                    String key = u + "_" + endItem[0]; // Key dạng "IDđầu_IDđuôi"
+                    String key = u + "_" + endItem[0];
                     liuMatrix.put(key, liuMatrix.getOrDefault(key, 0L) + currentChainUtil); 
                     
+                    // Lưu các item ở giữa (cho LIU-LB)
                     if (!liuMiddleItems.containsKey(key)) {
                         IntArrayList mids = new IntArrayList();
                         for(int k = i + 1; k < j; k++) mids.add(trans.get(k)[0]);
@@ -221,61 +230,99 @@ public class ITHUI_Algorithm {
             }
         }
 
-        // --- BƯỚC C.1: CHIẾN LƯỢC LIU-E (SỬA LỖI HIỂN THỊ) ---
-        System.out.println(">> [LIU] Chạy LIU-E...");
-        // [FIX]: Duyệt entrySet để lấy Key (Tên item) thay vì chỉ lấy Value
-        for (Map.Entry<String, Long> entry : liuMatrix.entrySet()) {
-            long utility = entry.getValue();
-            if (utility >= minUtil) {
-                // Tách Key "u_v" để lấy ID item
-                String[] parts = entry.getKey().split("_");
-                IntArrayList patternItems = new IntArrayList();
-                patternItems.add(Integer.parseInt(parts[0])); // Item u
-                patternItems.add(Integer.parseInt(parts[1])); // Item v
-                
-                // Cập nhật vào Top-k với đầy đủ tên tuổi
-                updateTopK(pq, new Pattern(patternItems, utility)); 
+        // --- BƯỚC C.1: CHIẾN LƯỢC LIU-E ---
+        // LIU-E: Dùng utility THỰC TẾ trong ma trận để nâng ngưỡng
+        // CHỈ NÂNG NGƯỠNG, KHÔNG THÊM VÀO TOP-K
+        System.out.println(">> [LIU-E] Đang chạy...");
+        
+        // Thu thập tất cả giá trị utility từ ma trận
+        List<Long> allUtilities = new ArrayList<>(liuMatrix.values());
+        
+        // Sắp xếp giảm dần
+        allUtilities.sort(Collections.reverseOrder());
+        
+        // Đưa K giá trị lớn nhất vào hàng đợi nâng ngưỡng
+        // Hàng đợi nâng ngưỡng là MIN-HEAP, giữ K giá trị lớn nhất
+        PriorityQueue<Long> thresholdQueue = new PriorityQueue<>();
+        
+        // Nếu đã có ngưỡng từ trước (warm-start), khởi tạo queue với giá trị đó
+        if (minUtil > 0) {
+            // Giữ các giá trị >= minUtil hiện tại
+            for (Long util : allUtilities) {
+                if (util >= minUtil) {
+                    thresholdQueue.offer(util);
+                    if (thresholdQueue.size() > K_VALUE) {
+                        thresholdQueue.poll(); // Bỏ giá trị nhỏ nhất
+                    }
+                }
+            }
+        } else {
+            // Khởi tạo từ đầu: lấy K giá trị lớn nhất
+            for (Long util : allUtilities) {
+                thresholdQueue.offer(util);
+                if (thresholdQueue.size() > K_VALUE) {
+                    thresholdQueue.poll();
+                }
             }
         }
-        System.out.println(">> [LIU-E] Ngưỡng hiện tại: " + minUtil);
+        
+        // Cập nhật minUtil = giá trị nhỏ nhất trong K giá trị lớn nhất
+        if (thresholdQueue.size() >= K_VALUE) {
+            minUtil = Math.max(minUtil, thresholdQueue.peek());
+        }
+        
+        System.out.println(">> [LIU-E] Ngưỡng sau LIU-E: " + minUtil);
 
-        // --- BƯỚC C.2: CHIẾN LƯỢC LIU-LB (SỬA LỖI HIỂN THỊ) ---
-        System.out.println(">> [LIU] Chạy LIU-LB...");
+        // --- BƯỚC C.2: CHIẾN LƯỢC LIU-LB ---
+        // LIU-LB: Tính Lower Bound bằng cách bỏ bớt item ở giữa
+        // CHỈ NÂNG NGƯỠNG, KHÔNG THÊM VÀO TOP-K
+        System.out.println(">> [LIU-LB] Đang chạy...");
+        
         for (Map.Entry<String, Long> entry : liuMatrix.entrySet()) {
             String key = entry.getKey();
-            long utility = entry.getValue(); 
+            long chainUtility = entry.getValue(); 
             
-            if (utility < minUtil) continue; 
+            if (chainUtility < minUtil) continue; 
 
             IntArrayList mids = liuMiddleItems.get(key);
             if (mids != null && !mids.isEmpty()) {
                 int mSize = mids.size();
-                
-                // Chuẩn bị Pattern đại diện cho LB (Gồm Đầu và Đuôi)
-                String[] parts = key.split("_");
-                IntArrayList lbPattern = new IntArrayList();
-                lbPattern.add(Integer.parseInt(parts[0]));
-                lbPattern.add(Integer.parseInt(parts[1]));
 
-                // Case 1: Bỏ 1 item
+                // Case 1: Bỏ 1 item ở giữa
                 for (int m : mids) {
-                    long lb = utility - itemTotalUtilityMap.getOrDefault(m, 0L);
-                    if (lb >= minUtil) updateTopK(pq, new Pattern(lbPattern, lb));
+                    long lb = chainUtility - itemTotalUtilityMap.getOrDefault(m, 0L);
+                    if (lb > minUtil) {
+                        thresholdQueue.offer(lb);
+                        if (thresholdQueue.size() > K_VALUE) {
+                            thresholdQueue.poll();
+                        }
+                        if (thresholdQueue.size() >= K_VALUE) {
+                            minUtil = Math.max(minUtil, thresholdQueue.peek());
+                        }
+                    }
                 }
 
-                // Case 2: Bỏ 2 item
+                // Case 2: Bỏ 2 item ở giữa
                 if (mSize >= 2) {
                     for (int x = 0; x < mSize; x++) {
                         for (int y = x + 1; y < mSize; y++) {
                             long deduc = itemTotalUtilityMap.getOrDefault(mids.getInt(x), 0L) 
                                        + itemTotalUtilityMap.getOrDefault(mids.getInt(y), 0L);
-                            long lb = utility - deduc;
-                            if (lb >= minUtil) updateTopK(pq, new Pattern(lbPattern, lb));
+                            long lb = chainUtility - deduc;
+                            if (lb > minUtil) {
+                                thresholdQueue.offer(lb);
+                                if (thresholdQueue.size() > K_VALUE) {
+                                    thresholdQueue.poll();
+                                }
+                                if (thresholdQueue.size() >= K_VALUE) {
+                                    minUtil = Math.max(minUtil, thresholdQueue.peek());
+                                }
+                            }
                         }
                     }
                 }
 
-                // Case 3: Bỏ 3 item
+                // Case 3: Bỏ 3 item ở giữa
                 if (mSize >= 3) {
                     for (int x = 0; x < mSize; x++) {
                         for (int y = x + 1; y < mSize; y++) {
@@ -283,14 +330,24 @@ public class ITHUI_Algorithm {
                                 long deduc = itemTotalUtilityMap.getOrDefault(mids.getInt(x), 0L) 
                                            + itemTotalUtilityMap.getOrDefault(mids.getInt(y), 0L)
                                            + itemTotalUtilityMap.getOrDefault(mids.getInt(z), 0L);
-                                long lb = utility - deduc;
-                                if (lb >= minUtil) updateTopK(pq, new Pattern(lbPattern, lb));
+                                long lb = chainUtility - deduc;
+                                if (lb > minUtil) {
+                                    thresholdQueue.offer(lb);
+                                    if (thresholdQueue.size() > K_VALUE) {
+                                        thresholdQueue.poll();
+                                    }
+                                    if (thresholdQueue.size() >= K_VALUE) {
+                                        minUtil = Math.max(minUtil, thresholdQueue.peek());
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        
+        System.out.println(">> [LIU-LB] Ngưỡng sau LIU-LB: " + minUtil);
         System.out.println(">> [LIU] Hoàn tất. Ngưỡng cuối cùng: " + minUtil);
     }
 
@@ -431,25 +488,17 @@ public class ITHUI_Algorithm {
             minUtil = pq.peek().utility;
         }
     }
-    // --- KRYO UTILS ---
-    static void saveStateKryo(ITHUIState state, String filename) {
-        try {
-            Kryo kryo = new Kryo();
-            kryo.setRegistrationRequired(false);
-            Output output = new Output(new FileOutputStream(filename));
-            kryo.writeObject(output, state);
-            output.close();
+    // --- SERIALIZATION UTILS ---
+    static void saveState(ITHUIState state, String filename) {
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(filename))) {
+            oos.writeObject(state);
             System.out.println(">> Đã lưu trạng thái Binary.");
         } catch(Exception e) { e.printStackTrace(); }
     }
 
-    static ITHUIState loadStateKryo(String filename) {
-        try {
-            Kryo kryo = new Kryo();
-            kryo.setRegistrationRequired(false);
-            Input input = new Input(new FileInputStream(filename));
-            ITHUIState s = kryo.readObject(input, ITHUIState.class);
-            input.close();
+    static ITHUIState loadState(String filename) {
+        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(filename))) {
+            ITHUIState s = (ITHUIState) ois.readObject();
             // Reset RU sau khi load
             for(GlobalUtilityList l : s.globalLists.values()) l.resetRU();
             return s;

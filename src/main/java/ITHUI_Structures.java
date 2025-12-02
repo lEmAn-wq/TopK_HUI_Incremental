@@ -23,7 +23,7 @@ class GlobalUtilityList implements Serializable {
     // Thêm biến này để lưu vết Pattern ID (phục vụ in kết quả)
     public IntArrayList patternItems = new IntArrayList();
 
-    public GlobalUtilityList() {} // Cho Kryo
+    public GlobalUtilityList() {} // Constructor mặc định cho Serialization
     public GlobalUtilityList(int id) {
         this.itemInternalId = id;
         this.patternItems.add(id); // Mặc định chứa chính nó
