@@ -1,18 +1,44 @@
 # --- GLOBAL CONFIG (Cập nhật mới nhất) ---
 k = 5
-last_TID = 55
+last_TID = 40
 
 # ============================================================
-# FINISHED AT: 2025-12-03 05:31:14
-# DATASET: Incremental Run (TID <= 55)
+# FINISHED AT: 2025-12-03 06:26:52
+# DATASET: Incremental Run (TID <= 40)
 # ============================================================
 
-[RANK 1] Utility: 10100000
+[RANK 1] Utility: 6900000
  - {cb3 105 }
 
-[RANK 2] Utility: 8000000
+[RANK 2] Utility: 6000000
  - {105 }
 
-[RANK 3] Utility: 3600000
+[RANK 3] Utility: 2400000
  - {cb3 }
+
+[RANK 4] Utility: 2100000
+ - {104 105 }
+
+[RANK 5] Utility: 1400000
+ - {104 }
+
+# ============================================================
+# FINISHED AT: 2025-12-03 06:23:31
+# DATASET: Incremental Run (TID <= 19)
+# ============================================================
+
+[RANK 1] Utility: 5300000
+ - {105 cb3 }
+
+[RANK 2] Utility: 3500000
+ - {105 }
+
+[RANK 3] Utility: 1800000
+ - {cb3 }
+
+[RANK 4] Utility: 800000
+ - {104 }
+
+[RANK 5] Utility: 270000
+ - {cb1 101 }
 

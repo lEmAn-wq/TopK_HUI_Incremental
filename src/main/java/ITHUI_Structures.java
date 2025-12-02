@@ -90,6 +90,13 @@ class GlobalThresholdQueue {
     }
 
     public long getMinUtil() { return minUtil; }
+    
+    // Trả về các giá trị trong queue (dùng cho debug)
+    public List<Long> getQueueValues() {
+        List<Long> values = new ArrayList<>(queue);
+        values.sort(Collections.reverseOrder());
+        return values;
+    }
 }
 
 // ===========================================================
@@ -142,4 +149,11 @@ class TopKResultList {
 
     public long getMinUtil() { return minUtil; }
     public List<Pattern> getResults() { return results; }
+    
+    // Trả về số rank hiện có (số mức utility khác nhau)
+    public int size() {
+        Set<Long> distinctUtils = new HashSet<>();
+        for (Pattern p : results) distinctUtils.add(p.utility);
+        return distinctUtils.size();
+    }
 }
