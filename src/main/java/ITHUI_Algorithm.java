@@ -15,30 +15,27 @@ public class ITHUI_Algorithm {
         ITHUI_IO.Config config = ITHUI_IO.readConfigFile(configFile);
         K_VALUE = config.k;
         
-        // 2. Warm-Start: Lấy ngưỡng từ lần chạy trước
+        // 2. Warm-Start
         ITHUIState state = loadState(binaryFile);
         long startMinUtil = state.lastMinUtil; 
         System.out.println(">> [Warm-Start] MinUtil từ lần trước: " + startMinUtil);
 
-        // 3. Lấy dữ liệu mới
+        // 3. Fetch Data
         List<ITHUI_IO.TransactionTuple> newData = ITHUI_IO.fetchIncrementalData(config.lastTID);
         if (newData.isEmpty()) {
             System.out.println(">> Không có dữ liệu mới. Kết thúc.");
             return;
         }
 
-        // 4. Insertion Phase: Cập nhật Global Lists
+        // 4. Update Global Lists
         int maxTID = config.lastTID;
         HashMap<Integer, Long> transactionUtilityMap = new HashMap<>();
-        
-        // Tính Transaction Utility
         for (ITHUI_IO.TransactionTuple t : newData) {
             transactionUtilityMap.put(t.tid, transactionUtilityMap.getOrDefault(t.tid, 0L) + t.utility);
             if (t.tid > maxTID) maxTID = t.tid;
         }
         config.lastTID = maxTID;
 
-        // Cập nhật List
         for (ITHUI_IO.TransactionTuple t : newData) {
             if (!state.stringToIntMap.containsKey(t.itemStr)) {
                 int newId = state.nextInternalId++;
@@ -54,76 +51,66 @@ public class ITHUI_Algorithm {
             list.twu += transactionUtilityMap.get(t.tid);
         }
 
-        // Cache Utility cho LIU-LB
+        // =========================================================
+        // GIAI ĐOẠN 1: NÂNG NGƯỠNG (THRESHOLD RAISING)
+        // =========================================================
+        
+        GlobalThresholdQueue thresholdQueue = new GlobalThresholdQueue(K_VALUE, startMinUtil);
+
+        // Cache Utility
         itemTotalUtilityMap.clear();
         for (GlobalUtilityList list : state.globalLists.values()) {
             itemTotalUtilityMap.put(list.itemInternalId, list.sumIU);
         }
 
-        // =========================================================
-        // GIAI ĐOẠN 1: NÂNG NGƯỠNG (THRESHOLD RAISING)
-        // Dùng GlobalThresholdQueue (Strict Top-k)
-        // =========================================================
-        
-        GlobalThresholdQueue thresholdQueue = new GlobalThresholdQueue(K_VALUE, startMinUtil);
-
-        // A. Chiến lược RIU: Duyệt tuần tự -> Nạp vào Queue
+        // A. RIU
         runStrategy_RIU(state, thresholdQueue);
 
-        // B. Sắp xếp & Restructuring
+        // B. Restructuring
         List<GlobalUtilityList> sortedLists = new ArrayList<>(state.globalLists.values());
         sortedLists.sort((a, b) -> Long.compare(a.twu, b.twu)); 
-        // Dùng minUtil hiện tại của Queue để cắt tỉa việc tính RU
         runRestructuring(sortedLists, thresholdQueue.getMinUtil());
 
-        // C. Chiến lược LIU
+        // C. LIU
         runStrategy_LIU(sortedLists, thresholdQueue);
         
-        // CHỐT NGƯỠNG
         long miningThreshold = thresholdQueue.getMinUtil();
         System.out.println(">> [Phase 1 End] Ngưỡng chốt để Mining: " + miningThreshold);
-        thresholdQueue = null; // Giải phóng
+        thresholdQueue = null;
 
         // =========================================================
         // GIAI ĐOẠN 2: KHAI PHÁ (MINING)
-        // Dùng TopKResultList (Dense Rank)
         // =========================================================
         
         TopKResultList resultList = new TopKResultList(K_VALUE, miningThreshold);
         
+        // [FIX QUAN TRỌNG]: Tạo danh sách item tham gia mining
         List<GlobalUtilityList> seedLists = new ArrayList<>();
         
-        // Cần cập nhật lại minU mới nhất từ resultList mỗi khi thêm item
-        // (Dù lúc đầu nó bằng miningThreshold nhưng sau khi add item đơn nó có thể tăng lên)
-        
         for (GlobalUtilityList list : sortedLists) {
-            // Lấy ngưỡng hiện tại của ResultList để lọc
-            long currentMin = resultList.getMinUtil(); 
+            // 1. Chỉ loại bỏ nếu TWU quá thấp (không thể làm Prefix lẫn Extension)
+            if (list.twu < miningThreshold) continue;
+            
+            // 2. Thêm vào seedLists để làm nguyên liệu cho DFS
+            seedLists.add(list);
 
-            // Cắt tỉa cơ bản
-            if (list.twu < currentMin) continue;
-
-            // [FIX QUAN TRỌNG] Thêm Item đơn lẻ vào kết quả nếu đủ ngưỡng
-            if (list.sumIU >= currentMin) {
+            // 3. [FIX] Thêm chính Item đơn lẻ này vào kết quả (nếu đủ ngưỡng)
+            // (Lưu ý: resultList tự lo việc kiểm tra minUtil động)
+            if (list.sumIU >= resultList.getMinUtil()) {
                 IntArrayList pattern = new IntArrayList();
                 pattern.add(list.itemInternalId);
                 resultList.add(new Pattern(pattern, list.sumIU));
             }
-
-            // Kiểm tra khả năng mở rộng (Upper Bound)
-            if (list.sumIU + list.sumRU >= currentMin) {
-                seedLists.add(list);
-            }
         }
         
-        // Chạy Mining DFS cho các mẫu phối hợp (2 item trở lên)
+        // Chạy Mining
         runMiningDFS(null, seedLists, resultList);
 
         // =========================================================
         // GIAI ĐOẠN 3: LƯU TRỮ
         // =========================================================
         
-        state.lastMinUtil = resultList.getMinUtil(); // Lưu ngưỡng Dense Rank cho lần sau
+        state.lastMinUtil = resultList.getMinUtil();
         List<Pattern> finalResults = resultList.getResults();
         
         saveState(state, binaryFile);
@@ -135,7 +122,6 @@ public class ITHUI_Algorithm {
     // ---------------------------------------------------------
 
     static void runStrategy_RIU(ITHUIState state, GlobalThresholdQueue queue) {
-        // Duyệt tuần tự từng item, kiểm tra với minUtil hiện tại
         for (GlobalUtilityList list : state.globalLists.values()) {
             queue.add(list.sumIU);
         }
@@ -163,7 +149,6 @@ public class ITHUI_Algorithm {
         System.out.println(">> [LIU] Đang chạy...");
         long minU = queue.getMinUtil();
         
-        // ... (Logic xây dựng ma trận LIU giữ nguyên như cũ) ...
         HashMap<Integer, ArrayList<int[]>> tempTransactions = new HashMap<>();
         HashMap<Integer, Integer> itemRankMap = new HashMap<>();
         for(int i=0; i<sortedLists.size(); i++) itemRankMap.put(sortedLists.get(i).itemInternalId, i);
@@ -200,11 +185,9 @@ public class ITHUI_Algorithm {
             }
         }
 
-        // LIU-E
         for (Long val : liuMatrix.values()) queue.add(val);
         System.out.println(">> [LIU-E] Ngưỡng: " + queue.getMinUtil());
 
-        // LIU-LB (Recursive)
         for (Map.Entry<String, Long> entry : liuMatrix.entrySet()) {
             long baseVal = entry.getValue();
             if (baseVal < queue.getMinUtil()) continue;
@@ -230,12 +213,16 @@ public class ITHUI_Algorithm {
     }
 
     static void runMiningDFS(GlobalUtilityList parentList, List<GlobalUtilityList> siblings, TopKResultList resultList) {
-        long minU = resultList.getMinUtil();
+        long minU = resultList.getMinUtil(); 
         
         for (int i = 0; i < siblings.size(); i++) {
             GlobalUtilityList prefixList = siblings.get(i);
-            List<GlobalUtilityList> childLists = new ArrayList<>();
             
+            // [FIX] Kiểm tra điều kiện UB ở đây để quyết định có ĐI SÂU hay không
+            // Nhưng KHÔNG loại prefixList khỏi danh sách siblings của người khác
+            if (prefixList.sumIU + prefixList.sumRU < minU) continue;
+
+            List<GlobalUtilityList> childLists = new ArrayList<>();
             for (int j = i + 1; j < siblings.size(); j++) {
                 GlobalUtilityList extensionList = siblings.get(j);
                 GlobalUtilityList newList = constructUtilityList(prefixList, extensionList, parentList);
@@ -245,20 +232,19 @@ public class ITHUI_Algorithm {
                     if (parentList != null) newPatternItems.addAll(parentList.patternItems);
                     else newPatternItems.add(prefixList.itemInternalId);
                     newPatternItems.add(extensionList.itemInternalId);
-                    
                     resultList.add(new Pattern(newPatternItems, newList.sumIU));
-                    minU = resultList.getMinUtil(); 
+                    minU = resultList.getMinUtil(); // Cập nhật minU
                 }
                 
                 if (newList.sumIU + newList.sumRU >= minU) {
                     childLists.add(newList);
                 }
             }
+            
             if (!childLists.isEmpty()) runMiningDFS(prefixList, childLists, resultList);
         }
     }
     
-    // ... (constructUtilityList, saveState, loadState giữ nguyên) ...
     static GlobalUtilityList constructUtilityList(GlobalUtilityList listX, GlobalUtilityList listY, GlobalUtilityList listParent) {
         GlobalUtilityList res = new GlobalUtilityList(listY.itemInternalId); 
         long sumIU = 0, sumRU = 0;
